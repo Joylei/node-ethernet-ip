@@ -405,7 +405,7 @@ class Tag extends EventEmitter {
      * @memberof Tag
      */
     parseReadMessageResponseValueForAtomic(data) {
-        const { SINT, INT, DINT, REAL, BOOL } = Types;
+        const { SINT, INT, DINT, REAL, BOOL, STRUCT } = Types;
 
         // Read Tag Value
         /* eslint-disable indent */
@@ -424,6 +424,15 @@ class Tag extends EventEmitter {
                 break;
             case BOOL:
                 this.controller_value = data.readUInt8(2) !== 0;
+                break;
+            case STRUCT:
+                let strLen = data.readInt32LE(4)
+                this.controller_value = data.toString('ascii', 8, strLen + 8) //support string here, string is an UDT
+                this._data_buf = data
+                // xx    - 2 bytes for type, here a002 for UDT
+                // xx    - crc code for type encoding string, for example string type: S8 with LEN 8 (DINT), DATA (SINT[8]), the crc code is crc16('S8,DINT,SINT[8]')
+                // xxxx - LEN: real length of data, with 0 padded
+                // rest bytes - DATA: size of SINT[8]， the size is integral multiple of 4, otherwise zero padded
                 break;
             default:
                 throw new Error(
@@ -513,7 +522,7 @@ class Tag extends EventEmitter {
      */
     generateWriteMessageRequestForAtomic(value, size) {
         const { tag } = this.state;
-        const { SINT, INT, DINT, REAL, BOOL } = Types;
+        const { SINT, INT, DINT, REAL, BOOL, STRUCT } = Types;
         // Build Message Router to Embed in UCMM
         let buf = Buffer.alloc(4);
         let valBuf = null;
@@ -552,6 +561,26 @@ class Tag extends EventEmitter {
                 else valBuf.writeInt8(0x01);
 
                 buf = Buffer.concat([buf, valBuf]);
+                break;
+            case STRUCT:
+               // support string
+               if(!this._data_buf){
+                    throw new Error('Cannot Write Unless Read The Tag')
+                }
+                //copy crc code to buf
+                this._data_buf.copy(buf,2,2,4);
+                let bufElementNum = Buffer.from([0x01, 0x00]);
+                let maxLen = this._data_buf.length - 8; //we don't know the actual max length, because zeros might be padded, maybe we can use a lookup table of crc codes to find the real max size?
+                let valLen = Math.min(value.length, maxLen);
+                valBuf = Buffer.alloc(maxLen + 4);
+                valBuf.writeInt32LE(valLen); // str length
+                valBuf.fill(value, 4, valLen + 4);
+                buf = Buffer.concat([buf, bufElementNum , valBuf]);
+                // xx    - 2 bytes for type, here a002
+                // xx    - crc code for type encoding string, for example string type: S8 with LEN 8 (DINT), DATA (SINT[8]), the crc code is crc16('S8,DINT,SINT[8]')
+                // xx    - number of elements
+                // xxxx - LEN: real length of data, with 0 padded
+                // dynamic - DATA: size of SINT[8]
                 break;
             default:
                 throw new Error(`Unrecognized Type to Write to Controller: ${tag.type}`);
